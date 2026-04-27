@@ -276,16 +276,23 @@ func resourceQueueUpdate(ctx context.Context, d *schema.ResourceData, meta any) 
 
 	// updates to outbound_caller_config
 	if d.HasChange("outbound_caller_config") {
-		input := &connect.UpdateQueueOutboundCallerConfigInput{
-			InstanceId:           aws.String(instanceID),
-			OutboundCallerConfig: expandOutboundCallerConfig(d.Get("outbound_caller_config").([]any)),
-			QueueId:              aws.String(queueID),
-		}
+		outboundCallerConfig := expandOutboundCallerConfig(d.Get("outbound_caller_config").([]any))
+		// expandOutboundCallerConfig returns nil only when the block is completely absent
+		// from config (len == 0). In that case there is nothing to update. When the block
+		// is present but empty (user removed all fields), it returns an empty non-nil struct
+		// which the API accepts to clear the configuration.
+		if outboundCallerConfig != nil {
+			input := &connect.UpdateQueueOutboundCallerConfigInput{
+				InstanceId:           aws.String(instanceID),
+				OutboundCallerConfig: outboundCallerConfig,
+				QueueId:              aws.String(queueID),
+			}
 
-		_, err = conn.UpdateQueueOutboundCallerConfig(ctx, input)
+			_, err = conn.UpdateQueueOutboundCallerConfig(ctx, input)
 
-		if err != nil {
-			return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) OutboundCallerConfig: %s", d.Id(), err)
+			if err != nil {
+				return sdkdiag.AppendErrorf(diags, "updating Connect Queue (%s) OutboundCallerConfig: %s", d.Id(), err)
+			}
 		}
 	}
 
@@ -463,13 +470,19 @@ func findQueueQuickConnectSummaries(ctx context.Context, conn *connect.Client, i
 }
 
 func expandOutboundCallerConfig(tfList []any) *awstypes.OutboundCallerConfig {
-	if len(tfList) == 0 || tfList[0] == nil {
+	if len(tfList) == 0 {
+		// No outbound_caller_config block in config — caller should skip the update.
 		return nil
+	}
+
+	if tfList[0] == nil {
+		// Block present but empty — return an empty struct to clear the config in AWS.
+		return &awstypes.OutboundCallerConfig{}
 	}
 
 	tfMap, ok := tfList[0].(map[string]any)
 	if !ok {
-		return nil
+		return &awstypes.OutboundCallerConfig{}
 	}
 
 	apiObject := &awstypes.OutboundCallerConfig{}
@@ -508,6 +521,12 @@ func flattenOutboundCallerConfig(apiObject *awstypes.OutboundCallerConfig) []any
 
 	if v := apiObject.OutboundFlowId; v != nil {
 		tfMap["outbound_flow_id"] = aws.ToString(v)
+	}
+
+	// AWS always returns a non-nil OutboundCallerConfig even when none was configured.
+	// If no fields are set, return an empty list to avoid perpetual drift.
+	if len(tfMap) == 0 {
+		return []any{}
 	}
 
 	return []any{tfMap}
